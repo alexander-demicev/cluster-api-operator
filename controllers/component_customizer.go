@@ -112,11 +112,7 @@ func customizeDeployment(pSpec operatorv1.ProviderSpec, d *appsv1.Deployment) {
 	if pSpec.Manager != nil {
 		for ic, c := range d.Spec.Template.Spec.Containers {
 			if c.Name == managerContainerName {
-<<<<<<< HEAD
 				customizeManager(pSpec.Manager, &d.Spec.Template.Spec.Containers[ic])
-=======
-				d.Spec.Template.Spec.Containers[ic] = *customizeManager(pSpec.Manager, &d.Spec.Template.Spec.Containers[ic])
->>>>>>> 11d51ea (Add component customizer)
 			}
 		}
 	}
