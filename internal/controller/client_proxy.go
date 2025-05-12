@@ -21,10 +21,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
@@ -40,9 +41,18 @@ import (
 // interact with the management cluster.
 type clientProxy struct {
 	client.Client
+	lastPatchAt atomic.Int64
 }
 
-func (c clientProxy) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+func NewClientProxy(c client.Client) *clientProxy {
+	proxy := &clientProxy{
+		Client: c,
+	}
+	proxy.lastPatchAt.Store(time.Now().UnixNano())
+	return proxy
+}
+
+func (c *clientProxy) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
 	switch l := list.(type) {
 	case *clusterctlv1.ProviderList:
 		return listProviders(ctx, c.Client, l)
@@ -51,7 +61,7 @@ func (c clientProxy) List(ctx context.Context, list client.ObjectList, opts ...c
 	}
 }
 
-func (c clientProxy) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+func (c *clientProxy) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 	switch o := obj.(type) {
 	case *clusterctlv1.Provider:
 		return nil
@@ -60,14 +70,37 @@ func (c clientProxy) Get(ctx context.Context, key client.ObjectKey, obj client.O
 	}
 }
 
-func (c clientProxy) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
-	switch o := obj.(type) {
-	case *clusterctlv1.Provider:
-		return nil
-	default:
-		return c.Client.Patch(ctx, o, patch, opts...)
+func (c *clientProxy) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	// Limit the patch rate to 1 per second
+	for {
+		last := c.lastPatchAt.Load()
+		now := time.Now().UnixNano()
+
+		if now-last >= int64(time.Second) {
+			if c.lastPatchAt.CompareAndSwap(last, now) {
+				break
+			}
+		} else {
+			time.Sleep(time.Millisecond * 10)
+		}
 	}
+
+	err := c.Client.Patch(ctx, obj, patch, opts...)
+	if err != nil {
+		return err
+	}
+
+	return err
 }
+
+// func (c clientProxy) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+// 	switch o := obj.(type) {
+// 	case *clusterctlv1.Provider:
+// 		return nil
+// 	default:
+// 		return c.Client.Patch(ctx, o, patch, opts...)
+// 	}
+// }
 
 func listProviders(ctx context.Context, cl client.Client, list *clusterctlv1.ProviderList) error {
 	providers := []operatorv1.GenericProviderList{
@@ -106,16 +139,18 @@ type controllerProxy struct {
 
 var _ cluster.Proxy = &controllerProxy{}
 
-func (k *controllerProxy) CurrentNamespace() (string, error)                { return "default", nil }
-func (k *controllerProxy) ValidateKubernetesVersion() error                 { return nil }
-func (k *controllerProxy) GetConfig() (*rest.Config, error)                 { return k.ctrlConfig, nil }
-func (k *controllerProxy) NewClient(context.Context) (client.Client, error) { return k.ctrlClient, nil }
-func (k *controllerProxy) GetContexts(prefix string) ([]string, error)      { return nil, nil }
-func (k *controllerProxy) CheckClusterAvailable(context.Context) error      { return nil }
+func (k *controllerProxy) CurrentNamespace() (string, error) { return "default", nil }
+func (k *controllerProxy) ValidateKubernetesVersion() error  { return nil }
+func (k *controllerProxy) GetConfig() (*rest.Config, error)  { return k.ctrlConfig, nil }
+func (k *controllerProxy) NewClient(context.Context) (client.Client, error) {
+	return &k.ctrlClient, nil
+}
+func (k *controllerProxy) GetContexts(prefix string) ([]string, error) { return nil, nil }
+func (k *controllerProxy) CheckClusterAvailable(context.Context) error { return nil }
 
 // GetResourceNames returns the list of resource names which begin with prefix.
 func (k *controllerProxy) GetResourceNames(ctx context.Context, groupVersion, kind string, options []client.ListOption, prefix string) ([]string, error) {
-	objList, err := listObjByGVK(ctx, k.ctrlClient, groupVersion, kind, options)
+	objList, err := listObjByGVK(ctx, &k.ctrlClient, groupVersion, kind, options)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +218,7 @@ func (k *controllerProxy) ListResources(ctx context.Context, labels map[string]s
 		for _, resourceKind := range resourceGroup.APIResources {
 			if resourceKind.Namespaced {
 				for _, namespace := range namespaces {
-					objList, err := listObjByGVK(ctx, k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels), client.InNamespace(namespace)})
+					objList, err := listObjByGVK(ctx, &k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels), client.InNamespace(namespace)})
 					if err != nil {
 						return nil, err
 					}
@@ -193,7 +228,7 @@ func (k *controllerProxy) ListResources(ctx context.Context, labels map[string]s
 					ret = append(ret, objList.Items...)
 				}
 			} else {
-				objList, err := listObjByGVK(ctx, k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels)})
+				objList, err := listObjByGVK(ctx, &k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels)})
 				if err != nil {
 					return nil, err
 				}

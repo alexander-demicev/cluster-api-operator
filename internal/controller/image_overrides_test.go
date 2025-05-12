@@ -21,53 +21,8 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
-	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/client-go/kubernetes/scheme"
 )
-
-// inspectImages identifies the container images required to install the objects defined in the objs.
-// NB. The implemented approach is specific for the provider components YAML & for the cert-manager manifest; it is not
-// intended to cover all the possible objects used to deploy containers existing in Kubernetes.
-func inspectImages(objs []unstructured.Unstructured) ([]string, error) {
-	images := []string{}
-
-	for i := range objs {
-		o := objs[i]
-
-		var podSpec corev1.PodSpec
-
-		switch o.GetKind() {
-		case deploymentKind:
-			d := &appsv1.Deployment{}
-			if err := scheme.Scheme.Convert(&o, d, nil); err != nil {
-				return nil, err
-			}
-
-			podSpec = d.Spec.Template.Spec
-		case daemonSetKind:
-			d := &appsv1.DaemonSet{}
-			if err := scheme.Scheme.Convert(&o, d, nil); err != nil {
-				return nil, err
-			}
-
-			podSpec = d.Spec.Template.Spec
-		default:
-			continue
-		}
-
-		for _, c := range podSpec.Containers {
-			images = append(images, c.Image)
-		}
-
-		for _, c := range podSpec.InitContainers {
-			images = append(images, c.Image)
-		}
-	}
-
-	return images, nil
-}
 
 func TestFixImages(t *testing.T) {
 	type args struct {

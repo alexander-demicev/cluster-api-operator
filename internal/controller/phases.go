@@ -239,7 +239,7 @@ func (p *phaseReconciler) load(ctx context.Context) (reconcile.Result, error) {
 func (p *phaseReconciler) secretReader(ctx context.Context, providers ...configclient.Provider) (configclient.Reader, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	mr := configclient.NewMemoryReader()
+	mr := NewMemoryReader()
 
 	if err := mr.Init(ctx, ""); err != nil {
 		return nil, err
@@ -458,7 +458,7 @@ func (p *phaseReconciler) fetch(ctx context.Context) (reconcile.Result, error) {
 	// Generate a set of new objects using the clusterctl library. NewComponents() will do the yaml processing,
 	// like ensure all the provider components are in proper namespace, replace variables, etc. See the clusterctl
 	// documentation for more details.
-	p.components, err = repository.NewComponents(repository.ComponentsInput{
+	p.components, err = NewComponents(repository.ComponentsInput{
 		Provider:     p.providerConfig,
 		ConfigClient: p.configClient,
 		Processor:    yamlprocessor.NewSimpleProcessor(),
@@ -471,17 +471,17 @@ func (p *phaseReconciler) fetch(ctx context.Context) (reconcile.Result, error) {
 
 	// ProviderSpec provides fields for customizing the provider deployment options.
 	// We can use clusterctl library to apply this customizations.
-	if err := repository.AlterComponents(p.components, customizeObjectsFn(p.provider)); err != nil {
+	if err := AlterComponents(p.components, customizeObjectsFn(p.provider)); err != nil {
 		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsCustomizationErrorReason, operatorv1.ProviderInstalledCondition)
 	}
 
 	// Apply patches to the provider components if specified.
-	if err := repository.AlterComponents(p.components, applyPatches(ctx, p.provider)); err != nil {
+	if err := AlterComponents(p.components, applyPatches(ctx, p.provider)); err != nil {
 		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsPatchErrorReason, operatorv1.ProviderInstalledCondition)
 	}
 
 	// Apply image overrides to the provider manifests.
-	if err := repository.AlterComponents(p.components, imageOverrides(p.components.ManifestLabel(), p.overridesClient)); err != nil {
+	if err := AlterComponents(p.components, imageOverrides(p.components.ManifestLabel(), p.overridesClient)); err != nil {
 		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsImageOverrideErrorReason, operatorv1.ProviderInstalledCondition)
 	}
 
@@ -576,7 +576,7 @@ func getProvider(provider operatorv1.GenericProvider, defaultVersion string) clu
 
 // loadCustomProviders loads the passed providers list into the clusterctl configuration via the MemoryReader.
 func loadCustomProviders(providers []operatorv1.GenericProvider, reader configclient.Reader) (configclient.Reader, error) {
-	mr, ok := reader.(*configclient.MemoryReader)
+	mr, ok := reader.(*MemoryReader)
 	if !ok {
 		return nil, fmt.Errorf("unable to load custom providers, invalid reader passed")
 	}
@@ -668,8 +668,9 @@ func (p *phaseReconciler) repositoryProxy(ctx context.Context, provider configcl
 
 // newClusterClient returns a clusterctl client for interacting with management cluster.
 func (p *phaseReconciler) newClusterClient() cluster.Client {
+	clientProxy := NewClientProxy(p.ctrlClient)
 	return cluster.New(cluster.Kubeconfig{}, p.configClient, cluster.InjectProxy(&controllerProxy{
-		ctrlClient: clientProxy{p.ctrlClient},
+		ctrlClient: *clientProxy,
 		ctrlConfig: p.ctrlConfig,
 	}), cluster.InjectRepositoryFactory(p.repositoryProxy))
 }
